@@ -1,21 +1,22 @@
-const int numSensores = 6; // Ajustado para 6 sensores
+const int numSensores = 6;
 const int sensoresAnalogicos[numSensores] = {A0, A1, A2, A3, A4, A5};
 const int releSaidas[numSensores] = {30, 31, 32, 33, 34, 35};
 
 const int buzzerPin = 44; 
 const int sensorNivelPin = 53;
 
-// --- DIAGNÓSTICO (Sem bloqueio) ---
+// Variáveis para armazenar o histórico do último ciclo
+int historicoUmidade[numSensores];
 int tentativasRega[numSensores]; 
-const int LIMITE_ALERTA_FALHA = 3; // Avisa após 3 tentativas sem sucesso
+const int LIMITE_ALERTA_FALHA = 3;
 
-// --- CALIBRAÇÃO ---
+// Calibração
 const int amostras = 15;
 const int VALOR_SECO = 635;    
 const int VALOR_MOLHADO = 215; 
-const int LIMITE_REGA = 80;    
+const int LIMITE_REGA = 90;    
 
-// --- TEMPOS ---
+// Tempos
 const unsigned long tempoRega = 10000; 
 const unsigned long tempoEspera = 5000; 
 const unsigned long intervaloCiclo = 30000; 
@@ -26,29 +27,26 @@ void setup() {
     pinMode(releSaidas[i], OUTPUT);
     digitalWrite(releSaidas[i], HIGH); 
     tentativasRega[i] = 0;
+    historicoUmidade[i] = 0;
   }
   pinMode(buzzerPin, OUTPUT);
   pinMode(sensorNivelPin, INPUT_PULLUP);
-  Serial.println("Sistema 6 Canais - Monitoramento de Falhas (Sem Bloqueio)");
+  Serial.println("SISTEMA DE IRRIGACAO AUTOMATICA INICIADO");
 }
 
 void loop() {
-  if (digitalRead(sensorNivelPin)) {
-    bloqueioSeguranca();
-  } 
-  else {
-    noTone(buzzerPin);
-    processarRega();
-    Serial.println("------------------------------------------");
-    delay(intervaloCiclo); 
-  }
+  checarNivelImediato();
+  
+  processarRega();
+  
+  apresentarHistorico(); // Chama a nova função de apresentação
+  
+  delayInteligente(intervaloCiclo);
 }
 
 void processarRega() {
   for (int i = 0; i < numSensores; i++) {
-    if(digitalRead(sensorNivelPin)) return; 
-
-    // Limpeza de cache do ADC
+    checarNivelImediato();
     analogRead(sensoresAnalogicos[i]);
     delay(50);
 
@@ -61,43 +59,69 @@ void processarRega() {
     int umidade = map(leituraMedia, VALOR_SECO, VALOR_MOLHADO, 0, 100);
     umidade = constrain(umidade, 0, 100);
 
-    Serial.print("Sensor "); Serial.print(i);
-    Serial.print(" | Umidade: "); Serial.print(umidade); Serial.print("%");
+    historicoUmidade[i] = umidade; // Salva para a apresentação final
 
     if (umidade < LIMITE_REGA) {
       tentativasRega[i]++; 
-      
-      // Se houver suspeita de falha, apenas avisa, não bloqueia
       if (tentativasRega[i] > LIMITE_ALERTA_FALHA) {
-        Serial.print(" -> [AVISO: Bomba "); Serial.print(i); Serial.println(" pode estar com defeito]");
-        alertaErroBomba();
-      } else {
-        Serial.println(" -> Solo Seco. Regando...");
+        alertaErroBomba(); 
       }
-
-      // Aciona a bomba de qualquer forma
       digitalWrite(releSaidas[i], LOW);
-      delay(tempoRega);
+      delayInteligente(tempoRega);
       digitalWrite(releSaidas[i], HIGH);
-      delay(tempoEspera);
-      
+      delayInteligente(tempoEspera);
     } else {
-      Serial.println(" -> OK.");
-      tentativasRega[i] = 0; // Reseta contador se a água for detectada
+      tentativasRega[i] = 0;
       digitalWrite(releSaidas[i], HIGH);
     }
-    delay(100);
   }
 }
 
-void bloqueioSeguranca() {
-  Serial.println("!!! RESERVATORIO VAZIO !!!");
-  for (int i = 0; i < numSensores; i++) digitalWrite(releSaidas[i], HIGH);
-  tone(buzzerPin, 1000); delay(200); noTone(buzzerPin); delay(200);
+void apresentarHistorico() {
+  Serial.println("\n\n================================================");
+  Serial.println("       RELATORIO DE UMIDADE DO CICLO            ");
+  Serial.println("================================================");
+  Serial.println(" VASO  |  UMIDADE  |  STATUS  | TENTATIVAS FALHAS ");
+  Serial.println("-------|-----------|----------|-------------------");
+
+  for (int i = 0; i < numSensores; i++) {
+    Serial.print("  ["); Serial.print(i); Serial.print("]  |    ");
+    Serial.print(historicoUmidade[i]); Serial.print("%    |  ");
+
+    if (historicoUmidade[i] < LIMITE_REGA) {
+      Serial.print("SECO    |       ");
+    } else {
+      Serial.print("OK      |       ");
+    }
+
+    Serial.println(tentativasRega[i]); // Quebra de linha final da linha da tabela
+  }
+  
+  Serial.println("================================================");
+  Serial.print("RESERVATORIO: ");
+  if (digitalRead(sensorNivelPin)) Serial.println("VAZIO! ⚠️");
+  else Serial.println("NIVEL OK ✅");
+  Serial.println("================================================\n");
+}
+
+void checarNivelImediato() {
+  while (digitalRead(sensorNivelPin)) {
+    for (int i = 0; i < numSensores; i++) digitalWrite(releSaidas[i], HIGH);
+    Serial.println("!!! ALERTA: RESERVATORIO SECO - SISTEMA SUSPENSO !!!");
+    tone(buzzerPin, 1000); delay(300); noTone(buzzerPin); delay(300);
+  }
+}
+
+void delayInteligente(unsigned long ms) {
+  unsigned long inicio = millis();
+  while (millis() - inicio < ms) {
+    checarNivelImediato();
+    delay(1); 
+  }
 }
 
 void alertaErroBomba() {
-  // Beep de alerta curto enquanto rega/checa bomba suspeita
-  tone(buzzerPin, 2000); delay(150);
-  noTone(buzzerPin);
+  for (int r = 0; r < 5; r++) {
+    tone(buzzerPin, 2000); delay(150); noTone(buzzerPin); delay(150);
+  }
 }
